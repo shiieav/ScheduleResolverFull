@@ -1,0 +1,122 @@
+import 'dart:convert';
+
+import 'package:flutter/foundation.dart';
+import 'package:google_generative_ai/google_generative_ai.dart';
+import '../models/task_model.dart';
+import '../models/schedule_analysis.dart';
+
+class AiScheduleServices extends ChangeNotifier {
+
+  ScheduleAnalysis? _currentAnalysis;
+  bool _isLoading = false;
+  String? _errorMessage;
+
+  final String _apikey = 'AIzaSyC4OeOppexuIENetOO_0oqvb-ePYU6wfy0';
+
+  ScheduleAnalysis? get currentAnalysis => _currentAnalysis;
+  bool get isLoading => _isLoading;
+  String? get errorMessage => _errorMessage;
+
+  Future<void> analyzeSchedule(List<TaskModel> tasks) async {
+    if (tasks.isEmpty) return;
+    if (_apikey.isEmpty) {
+      _errorMessage = 'API key is missing.';
+      notifyListeners();
+      return;
+    }
+
+    _isLoading = true;
+    _errorMessage = null;
+    notifyListeners();
+
+    try {
+      final model = GenerativeModel(model: 'gemini-robotics-er-1.5-preview', apiKey: _apikey);
+      final tasksJson = jsonEncode(tasks.map((t) => t.toJson()).toList());
+
+      final prompt = '''
+You are an Expert Student scheduling assistant. The user has provided the following tasks for their day in JSON format:
+
+$tasksJson
+
+Your job is to analyze these tasks, identify any overlaps or conflicts in their start and end times, and suggest a better balanced schedule.
+Consider their urgency, importance and required energy level.
+
+Please provide exactly 4 sections of markdown text:
+1. ### Detected Conflicts
+List any scheduling conflicts or state that there are none.
+2. ### Ranked Tasks
+Ranks which tasks need attention first based on urgency, importance and energy, provide a brief reason for each.
+3. ### Recommended Schedule
+Provide a revised daily timeline view adjusting the task times to resolve conflicts and balance the student's workload, study time, and rest.
+4. ### Explanation
+Explain why this recommendation was made in simple language that a student would easily understand
+
+Ensure the markdown is well-formatted and easy to read. Do not include extra text outside of these headers.
+''';
+
+      final content = [Content.text(prompt)];
+      final response = await model.generateContent(content);
+      final rawText = response.text ?? '';
+
+      // DEBUG: print raw response to console
+      debugPrint('=== RAW GEMINI RESPONSE ===');
+      debugPrint(rawText);
+      debugPrint('=== END RESPONSE ===');
+
+      if (rawText.isEmpty) {
+        _errorMessage = 'Gemini returned an empty response.';
+        notifyListeners();
+        return;
+      }
+
+      _currentAnalysis = _parseResponse(rawText);
+
+      // DEBUG: print parsed fields
+      debugPrint('=== PARSED RESULT ===');
+      debugPrint('conflicts: ${_currentAnalysis?.conflicts}');
+      debugPrint('rankedTasks: ${_currentAnalysis?.rankedTasks}');
+      debugPrint('recommendedSchedule: ${_currentAnalysis?.recommendedSchedule}');
+      debugPrint('explanation: ${_currentAnalysis?.explanation}');
+      debugPrint('=== END PARSED ===');
+
+    } catch (e) {
+      _errorMessage = 'Failed: $e';
+      debugPrint('=== ERROR: $e ===');
+    } finally {
+      _isLoading = false;
+      notifyListeners();
+    }
+  }
+
+  ScheduleAnalysis _parseResponse(String fullText) {
+    String conflicts = '', rankedTasks = '', recommendedSchedule = '', explanation = '';
+
+    final sections = fullText.split('###');
+
+    debugPrint('=== TOTAL SECTIONS FOUND: ${sections.length} ===');
+    for (int i = 0; i < sections.length; i++) {
+      debugPrint('--- Section $i ---');
+      debugPrint(sections[i]);
+    }
+
+    for (var section in sections) {
+      final trimmed = section.trim();
+      if (trimmed.startsWith('Detected Conflicts')) {
+        conflicts = trimmed.replaceFirst('Detected Conflicts', '').trim();
+      } else if (trimmed.startsWith('Ranked Tasks')) {
+        rankedTasks = trimmed.replaceFirst('Ranked Tasks', '').trim();
+      } else if (trimmed.startsWith('Recommended Schedule')) {
+        recommendedSchedule = trimmed.replaceFirst('Recommended Schedule', '').trim();
+      } else if (trimmed.startsWith('Explanation')) {
+        explanation = trimmed.replaceFirst('Explanation', '').trim();
+      }
+    }
+
+    return ScheduleAnalysis(
+      conflicts: conflicts,
+      rankedTasks: rankedTasks,
+      recommendedSchedule: recommendedSchedule,
+      explanation: explanation,
+    );
+  }
+}
